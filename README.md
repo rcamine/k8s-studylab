@@ -19,7 +19,7 @@ namespaces in a single cluster, not separate clusters.
 | 0 | Cluster base, core objects, probes | ✅ done |
 | 1 | Namespaces, RBAC, **NetworkPolicy isolation** | ✅ done |
 | 2 | Istio ingress + real TLS on `*.rcamine.com` | ✅ done |
-| 3 | CI: build → GHCR | 🚧 in progress |
+| 3 | CI: build → GHCR → running in-cluster | ✅ done |
 | 4 | GitOps with Argo CD | ⬜ |
 | 5 | Canary 1→100%, Prometheus-gated (Argo Rollouts) | ⬜ |
 | 6 | Prometheus + Grafana + Loki, dashboards | ⬜ |
@@ -59,7 +59,7 @@ traffic is dropped in both directions — verified, not assumed.
 
 ```
 00-namespaces.yaml        namespaces + istio-injection labels
-10-test-apps.yaml         nginx placeholder workloads (being replaced by app/)
+10-test-apps.yaml         web Deployment+Service (staging & prod) + a client pod
 20-networkpolicy.yaml     default-deny ingress (prod)
 21-allow-ingress.yaml     additive allow-rules (prod)
 22-staging-policies.yaml  same pair for staging
@@ -82,7 +82,7 @@ A ~40-line Go HTTP server (`app/`) that reports its version and pod name:
 
 ```
 $ curl https://staging.rcamine.com/
-hello from web a1b2c3d (pod web-6dccb9bf47-t8j8j)
+hello from web 6e6a4cc (pod web-64b8d66fcb-smj4x)
 ```
 
 Deliberately minimal, but with the three properties the later phases need:
@@ -93,6 +93,35 @@ Deliberately minimal, but with the three properties the later phases need:
   when pods are killed during a rollout
 
 Built multi-stage into a distroless image: **~3 MB**, no shell, non-root.
+
+> Distroless means there's no shell in the pod, so `kubectl exec` won't work. Use
+> `kubectl debug -n staging <pod> --image=nicolaka/netshoot --target=web` to attach an
+> ephemeral container instead of baking tools into the image.
+
+---
+
+## Delivery pipeline
+
+```
+git push  →  GitHub Actions  →  GHCR  →  k3s pulls  →  Istio  →  https://staging.rcamine.com
+```
+
+`.github/workflows/build.yml` builds `app/` on every push that touches it and pushes to
+`ghcr.io/rcamine/studylab-web`, tagged with the **full commit SHA**. Deployments pin
+that SHA — never `:latest`, which is a mutable pointer that moves under you and makes
+"what is actually deployed?" unanswerable.
+
+A few choices worth noting:
+
+- **`runs-on: ubuntu-24.04-arm`** — a native arm64 runner (free on public repos), so the
+  image matches Apple Silicon without slow QEMU emulation.
+- **`permissions: packages: write`** — workflow tokens are read-only by default; without
+  this the push fails with an unhelpful 403.
+- **`secrets.GITHUB_TOKEN`** — minted per run and discarded. No PAT to create or rotate.
+- **`paths: app/**`** — editing a manifest doesn't trigger an image build.
+
+The package inherits the repo's public visibility, so the cluster pulls anonymously and
+needs no `imagePullSecrets`.
 
 ---
 
@@ -115,6 +144,10 @@ focus stays on what runs *inside* the cluster.
 ## Verifying it works
 
 ```bash
+# the whole pipeline in one line: our image, our cert, through Istio
+curl -s --resolve staging.rcamine.com:443:127.0.0.1 https://staging.rcamine.com/
+# -> hello from web <short-sha> (pod web-xxxxxxxxx-xxxxx)
+
 # HTTPS with a real, browser-trusted cert
 curl -sI --resolve staging.rcamine.com:443:127.0.0.1 https://staging.rcamine.com/
 
@@ -122,8 +155,13 @@ curl -sI --resolve staging.rcamine.com:443:127.0.0.1 https://staging.rcamine.com
 curl -so /dev/null -w '%{http_code}\n' -H 'Host: staging.rcamine.com' http://localhost/   # 301
 
 # isolation holds: staging cannot reach prod
-kubectl exec -n staging deploy/client -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://web.prod   # 000
+kubectl exec -n staging deploy/client -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://web.prod
 ```
+
+> That last one returns **503**, not 200 — the client's Envoy sidecar reporting
+> `upstream connect error ... remote connection failure` because NetworkPolicy dropped
+> the packets. (Without a sidecar in the path it shows as `000`, a curl timeout.) Either
+> way it's blocked; a successful reply would have been 200.
 
 > **Testing NetworkPolicy:** use a long-lived pod and `kubectl exec`, never a throwaway
 > `kubectl run --rm`. k3s's policy controller takes several seconds to program a new
