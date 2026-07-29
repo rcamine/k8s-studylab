@@ -1,0 +1,35 @@
+# STAGING — high rate limits, issues UNTRUSTED certs. Use while iterating.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: raphael.camine@gmail.com # LE sends expiry notices here — change if you want
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key # cert-manager stores your ACME account key here
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token # the Secret you just created
+              key: api-token
+---
+# PRODUCTION — real, browser-trusted certs. Stricter rate limits.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: raphael.camine@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token

@@ -1,0 +1,47 @@
+# The front door: accept HTTP for staging.rcamine.com at the ingress gateway
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: web-gateway
+  namespace: staging
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    # HTTPS on 443, terminating TLS with your wildcard cert
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE # standard server-side TLS
+        credentialName: wildcard-rcamine-tls # the Secret in istio-system
+      hosts:
+        - "staging.rcamine.com"
+    # HTTP on 80 -> redirect to HTTPS (nice-to-have, standard practice)
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "staging.rcamine.com"
+      tls:
+        httpsRedirect: true
+---
+# The routing: staging.rcamine.com -> the web service in staging
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: web
+  namespace: staging
+spec:
+  hosts:
+    - "staging.rcamine.com"
+  gateways:
+    - web-gateway # ties this routing to the Gateway above
+  http:
+    - route:
+        - destination:
+            host: web.staging.svc.cluster.local
+            port:
+              number: 80

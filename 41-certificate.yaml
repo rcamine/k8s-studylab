@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-rcamine
+  namespace: istio-system # so the gateway can read the resulting Secret
+spec:
+  secretName: wildcard-rcamine-tls # cert-manager writes the cert+key here
+  issuerRef:
+    name: letsencrypt-prod # ← staging first; we'll flip to -prod after
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.rcamine.com" # covers staging/grafana/argocd.rcamine.com ...
+    - "rcamine.com" # the apex too (wildcard doesn't include it)

@@ -1,0 +1,67 @@
+# nginx "web" in prod
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: prod }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: prod }
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+# nginx "web" in staging (same thing)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: staging }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: staging }
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+# a client in staging to curl from
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: client, namespace: staging }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: client } }
+  template:
+    metadata: { labels: { app: client } }
+    spec:
+      containers:
+        - name: client
+          image: nicolaka/netshoot # has curl/dig/etc.
+          command: ["sleep", "infinity"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

@@ -1,0 +1,35 @@
+# ---- secrets: never commit these ----
+# Safety net only. The real rule: create Secrets with `kubectl create secret`,
+# never write their values to a file. (Phase 8 = Sealed Secrets, which ARE
+# safe to commit — add an exception here when you get there.)
+*-secret.yaml
+*-secrets.yaml
+secret-*.yaml
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+kubeconfig
+*.kubeconfig
+
+# ---- Go ----
+# compiled binaries (the Dockerfile builds these inside the image)
+app/web
+*.exe
+*.test
+*.out
+vendor/
+
+# ---- editors / OS ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- local scratch ----
+tmp/
+scratch/
+*.local.yaml

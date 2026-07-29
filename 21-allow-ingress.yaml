@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-known-sources
+  namespace: prod
+spec:
+  podSelector: {} # applies to all prod pods
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # hole 1: same namespace (prod → prod)
+        - podSelector: {}
+        # hole 2: the monitoring namespace (Prometheus later)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        # hole 3: Istio ingress gateway (external traffic in, Phase 2)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
