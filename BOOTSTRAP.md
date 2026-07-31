@@ -151,6 +151,30 @@ kubectl get crd | grep argoproj    # applications, applicationsets, appprojects
 > `CrashLoopBackOff` has an exponential timer, so a fixed root cause still looks broken
 > for minutes.
 
+### Turn off Argo's own TLS
+
+`infra/argocd-ingress.yaml` puts Argo behind the Istio gateway, which terminates TLS
+with the Let's Encrypt wildcard cert. But `argocd-server` also serves TLS by default —
+with a self-signed cert — so without this patch you get **double TLS**: the gateway would
+have to re-encrypt to a certificate it has no reason to trust.
+
+```bash
+kubectl patch cm argocd-cmd-params-cm -n argocd --type merge \
+  -p '{"data":{"server.insecure":"true"}}'
+kubectl rollout restart deploy/argocd-server -n argocd
+```
+
+**This is not in git**, and it's the easiest step to forget on a rebuild. `argocd-cmd-params-cm`
+belongs to the install manifest fetched from a URL, not to this repo. Skip it and Argo
+appears broken in ways that don't point at the cause — redirect loops, or TLS errors from
+the gateway rather than from Argo.
+
+> `--insecure` means "don't do TLS yourself", not "no encryption". TLS terminates once,
+> at the edge, exactly as it does for `web`. The gateway→Argo hop is plaintext inside the
+> cluster; the `argocd` namespace has no Istio sidecar (deliberately — Argo's gRPC and
+> Redis traffic don't take injection well), so there's no mTLS on that hop either. Worth
+> revisiting under Phase 8.
+
 Then the app-of-apps root — **the last hand-applied manifest in this repo**:
 
 ```bash
@@ -161,12 +185,28 @@ It syncs `argocd/`, which creates the `infra`, `staging`, and `prod` Application
 in turn adopt everything from step 6. Adoption causes no restarts: Argo diffs git against
 live, finds them equivalent, and just stamps its tracking annotation.
 
-Finally, get in and secure the admin account:
+`infra` is a **manual** app, so the Argo ingress won't exist until you sync it. Chicken
+and egg — you can't reach the UI to click Sync. Trigger it through the Kubernetes API
+instead:
 
 ```bash
-kubectl port-forward -n argocd svc/argocd-server 8443:443
+kubectl patch app infra -n argocd --type merge -p '{"operation":{"sync":{}}}'
+kubectl get gw,virtualservice -n argocd     # note: `gw`, see below
+```
+
+> Anything the Argo CLI does, it does by mutating the `Application` CRD. So `kubectl`
+> still works when Argo's own ingress doesn't — which is exactly when you need it.
+
+> **`kubectl get gateway` lies here.** Two API groups register `gateways`:
+> `gateway.networking.k8s.io` (the Gateway API CRD Istio installs) and
+> `networking.istio.io`. kubectl silently picks the former and reports nothing found.
+> Use `gw` or `gateways.networking.istio.io`.
+
+Finally, secure the admin account:
+
+```bash
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
-argocd login localhost:8443 --insecure --username admin
+argocd login argocd.rcamine.com --grpc-web
 
 argocd account update-password
 kubectl -n argocd delete secret argocd-initial-admin-secret
@@ -175,6 +215,17 @@ kubectl -n argocd delete secret argocd-initial-admin-secret
 Change the password **before** deleting the Secret — deleting it doesn't invalidate the
 old password, it only removes your ability to look it up. Don't pass `--password` on the
 command line; it lands in shell history.
+
+> **`--grpc-web` is required.** The CLI speaks gRPC, which needs HTTP/2 end to end. Istio
+> forwards to the Service port named `http` and treats it as HTTP/1.1, so native gRPC
+> fails with opaque transport errors. `--grpc-web` tunnels gRPC over HTTP/1.1.
+
+> **If you must use a port-forward** (before the ingress exists, or to debug it), note
+> that `server.insecure` makes Argo serve **plain HTTP** — so it's
+> `argocd login localhost:8443 --plaintext`, not `--insecure`. Those flags are not
+> synonyms: `--insecure` means "do TLS but skip verification" and fails against a
+> plaintext server with `server gave HTTP response to HTTPS client`. Also remember a
+> port-forward binds to one pod — restarting `argocd-server` silently breaks it.
 
 > **Why manual:** the bootstrap paradox. Something has to create the thing that creates
 > everything else. `root.yaml` reduces that to exactly one command, forever.
@@ -210,11 +261,13 @@ local ingress:
 ```
 # /etc/hosts
 127.0.0.1  staging.rcamine.com
+127.0.0.1  argocd.rcamine.com
 127.0.0.1  rcamine.com
 ```
 
 `curl --resolve staging.rcamine.com:443:127.0.0.1 https://...` does the same thing
-without touching `/etc/hosts`.
+without touching `/etc/hosts` — handy for scripted checks, but the browser needs the
+real entries.
 
 > **Why manual:** the real DNS records intentionally don't point at a laptop.
 
@@ -222,10 +275,10 @@ without touching `/etc/hosts`.
 
 ## Still to come
 
-- **`argocd.rcamine.com` via Istio** — currently reachable only by port-forward with
-  `--insecure`. Needs a Gateway/VirtualService reusing the wildcard cert, plus
-  `argocd-server` running with `--insecure` so Istio terminates TLS instead of Argo
-  serving its own self-signed cert.
 - **prod on the apex `rcamine.com`** — prod has no external ingress at all today; it's
   reachable only in-cluster at `http://web.prod`. The wildcard cert already covers the
   apex, so it needs a Gateway/VirtualService mirroring staging's and a `/etc/hosts` entry.
+- **A NetworkPolicy for `argocd`** — `staging` and `prod` are default-deny, but `argocd`
+  has no policy at all, and it now hosts an admin console reachable through the gateway.
+  It isn't a copy of the existing pair: Argo needs egress to GitHub and the Kubernetes
+  API, and ingress from `istio-system`.

@@ -160,6 +160,9 @@ so the Applications themselves are git-managed; adding an environment is a new f
 a push. It lives at the repo root rather than inside `argocd/` on purpose — an
 Application that manages itself can be left unable to sync its own fix.
 
+The UI is at **<https://argocd.rcamine.com>** — behind the same Istio gateway and wildcard
+cert as everything else, so no port-forward. CLI: `argocd login argocd.rcamine.com --grpc-web`.
+
 | Application | Path | Sync |
 |---|---|---|
 | `root` | `argocd/` | automated, `selfHeal`, **no prune** |
