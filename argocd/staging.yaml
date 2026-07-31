@@ -13,5 +13,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: staging
-  # No syncPolicy yet. Staging is the natural first candidate for
-  # automated+selfHeal, but turn it on knowingly rather than by default.
+  # Staging is fully automated: a push to main deploys, drift is reverted.
+  syncPolicy:
+    automated:
+      # a resource removed from staging/ gets deleted from the cluster.
+      # Safe here: no Namespaces live in this path, only workloads.
+      prune: true
+      # revert ANY live change that contradicts git, within seconds.
+      # Right for staging (git is the only way in); deliberately NOT set
+      # on prod, where it would fight an on-call doing emergency surgery.
+      selfHeal: true
