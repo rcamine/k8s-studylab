@@ -1,0 +1,57 @@
+# External access to the Argo CD UI/API at argocd.rcamine.com.
+#
+# Replaces `kubectl port-forward` + `--insecure`: TLS is terminated once at
+# the Istio gateway using the same Let's Encrypt wildcard cert that serves
+# staging.rcamine.com.
+#
+# Requires argocd-server to run with --insecure (set via server.insecure in
+# the argocd-cmd-params-cm ConfigMap). Otherwise Argo terminates TLS itself
+# and the gateway would have to re-encrypt to a self-signed cert it has no
+# reason to trust. TLS at the edge, plaintext behind it.
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: argocd-gateway
+  namespace: argocd
+spec:
+  selector:
+    istio: ingressgateway # the shared gateway pod in istio-system
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        # Secret must live in istio-system — credentialName resolves
+        # relative to the GATEWAY's namespace, not this manifest's.
+        credentialName: wildcard-rcamine-tls
+      hosts:
+        - "argocd.rcamine.com"
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "argocd.rcamine.com"
+      tls:
+        httpsRedirect: true
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  hosts:
+    - "argocd.rcamine.com"
+  gateways:
+    - argocd-gateway
+  http:
+    - route:
+        - destination:
+            # port 80 on the Service -> containerPort 8080, where
+            # argocd-server multiplexes the HTTP UI and the gRPC API.
+            host: argocd-server.argocd.svc.cluster.local
+            port:
+              number: 80
