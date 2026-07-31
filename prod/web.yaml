@@ -1,0 +1,36 @@
+# "web" in prod — our own image, pinned to a commit SHA (never :latest,
+# which moves under you and makes "what's deployed?" unanswerable)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: prod }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/rcamine/studylab-web:6e6a4cc70a515a7793cfdb6d17c4254f5ee4c6c1
+          ports: [{ containerPort: 8080 }]
+          # can this pod take traffic? fails -> pulled from Service endpoints
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          # is this pod wedged? fails -> container restarted
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: prod }
+spec:
+  selector: { app: web }
+  # port stays 80 so callers and the VirtualService don't change;
+  # only targetPort follows the app to 8080
+  ports: [{ port: 80, targetPort: 8080 }]

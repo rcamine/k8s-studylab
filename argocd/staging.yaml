@@ -1,0 +1,17 @@
+# The staging environment: web + client + policies + external ingress.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: staging
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rcamine/k8s-studylab.git
+    targetRevision: main
+    path: staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging
+  # No syncPolicy yet. Staging is the natural first candidate for
+  # automated+selfHeal, but turn it on knowingly rather than by default.

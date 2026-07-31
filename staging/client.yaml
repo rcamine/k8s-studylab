@@ -1,0 +1,21 @@
+# A long-lived shell in staging to curl from.
+#
+# Deliberately long-lived, not `kubectl run --rm`: k3s takes several seconds
+# to program a new pod's IP into the NetworkPolicy ipset, so a throwaway pod
+# races ahead of the policy and reports a false "blocked".
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: client, namespace: staging }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: client } }
+  template:
+    metadata: { labels: { app: client } }
+    spec:
+      containers:
+        - name: client
+          image: nicolaka/netshoot # has curl/dig/etc.
+          command: ["sleep", "infinity"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

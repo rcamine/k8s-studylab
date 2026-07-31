@@ -1,0 +1,23 @@
+# Cluster-wide prerequisites: namespaces, ACME issuers, the wildcard cert.
+#
+# Separate from the app Applications because these are shared foundations —
+# you don't want a staging change and a "recreate the namespaces" change to
+# be the same Sync click.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rcamine/k8s-studylab.git
+    targetRevision: main
+    path: infra
+  destination:
+    server: https://kubernetes.default.svc
+    # Fallback for resources that declare no namespace. Everything here is
+    # either cluster-scoped (Namespace, ClusterIssuer) or explicit
+    # (Certificate -> istio-system), so this is never actually used.
+    namespace: default
+  # No syncPolicy = manual. Deliberate: infra changes should be looked at.

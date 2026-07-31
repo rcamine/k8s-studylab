@@ -1,0 +1,19 @@
+# The prod environment: web + policies. No external ingress yet — prod is
+# reachable only in-cluster at http://web.prod until the apex rcamine.com
+# Gateway/VirtualService is added.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rcamine/k8s-studylab.git
+    targetRevision: main
+    path: prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod
+  # Manual sync, on purpose. Promotion to prod should be a decision,
+  # not a consequence of pushing to main.

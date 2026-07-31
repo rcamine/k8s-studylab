@@ -1,0 +1,33 @@
+# "web" in staging — same image as prod (one artifact promoted through envs).
+# This file and prod/web.yaml are near-identical today; that duplication is
+# the thing a Kustomize base would remove if/when we add one.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: staging }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/rcamine/studylab-web:6e6a4cc70a515a7793cfdb6d17c4254f5ee4c6c1
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: staging }
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 8080 }]

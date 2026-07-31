@@ -1,0 +1,54 @@
+# Namespaces are guarded with Prune=false,Delete=false on purpose.
+#
+# Namespace deletion is RECURSIVE and ignores resource ownership: removing one
+# takes every object inside it, including things Argo never managed — the
+# hand-created cloudflare-api-token Secret, the Let's Encrypt account keys,
+# and (for argocd) Argo CD itself. Prune=false stops a missing manifest from
+# deleting it; Delete=false stops a cascading Application delete from doing so.
+#
+# Cheap insurance on the one resource type whose deletion is unbounded.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    istio-injection: enabled # sidecar auto-injected here
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    istio-injection: enabled
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring # no injection — infra ns
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager # infra ns — deliberately NO istio-injection label
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
