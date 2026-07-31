@@ -47,7 +47,7 @@ istioctl install --set profile=demo -y
 ```
 
 Namespaces opt into injection with the `istio-injection=enabled` label — see
-`00-namespaces.yaml`. Keep it off everywhere except `staging` and `prod`; every meshed
+`infra/namespaces.yaml`. Keep it off everywhere except `staging` and `prod`; every meshed
 pod costs ~50-100 Mi.
 
 ---
@@ -55,7 +55,7 @@ pod costs ~50-100 Mi.
 ## 4. cert-manager
 
 ```bash
-kubectl apply -f 00-namespaces.yaml     # creates the cert-manager namespace
+kubectl apply -f infra/namespaces.yaml     # creates the cert-manager namespace
 helm repo add jetstack https://charts.jetstack.io && helm repo update
 helm install cert-manager jetstack/cert-manager \
   -n cert-manager -f cert-manager-values.yaml
@@ -93,15 +93,14 @@ check exists because a silent empty paste produces a 0-byte Secret and a
 
 ## 6. Apply the manifests
 
-In numeric order — the numbering is the dependency order:
+In dependency order — infra first, then the environments:
 
 ```bash
-kubectl apply -f 00-namespaces.yaml
-kubectl apply -f 10-test-apps.yaml
-kubectl apply -f 20-networkpolicy.yaml -f 21-allow-ingress.yaml -f 22-staging-policies.yaml
-kubectl apply -f 40-clusterissuers.yaml
-kubectl apply -f 41-certificate.yaml     # wait for READY=True before the Gateway
-kubectl apply -f 30-istio-ingress.yaml
+kubectl apply -f infra/namespaces.yaml
+kubectl apply -f infra/clusterissuers.yaml
+kubectl apply -f infra/certificate.yaml   # wait for READY=True before the Gateway
+kubectl apply -R -f staging/
+kubectl apply -R -f prod/
 ```
 
 Wait for the certificate before applying the Gateway — it references the Secret
@@ -114,9 +113,75 @@ kubectl wait --for=condition=Ready certificate/wildcard-rcamine -n istio-system 
 > Note: the cert Secret must live in `istio-system` (the gateway's namespace), not the
 > app's namespace. `credentialName` is resolved relative to the gateway.
 
+> **This step is only for a cold rebuild.** Once Argo CD is running (step 7) it owns
+> these directories — do not `kubectl apply` them by hand afterwards, or you'll be
+> fighting `selfHeal` on staging.
+
 ---
 
-## 7. GHCR package visibility — nothing to do (if the repo is public)
+## 7. Argo CD
+
+Argo CD can't deploy itself, so this install is manual. Everything after it is git-driven.
+
+```bash
+kubectl apply -n argocd --server-side --force-conflicts \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+```
+
+**`--server-side` is mandatory, not a preference.** Plain `kubectl apply` records the
+manifest it applied into a `kubectl.kubernetes.io/last-applied-configuration` annotation,
+and annotations are capped at 262,144 bytes. The `applicationsets.argoproj.io` CRD is
+**~1.39 MB** of OpenAPI schema, so it is silently rejected while everything else
+succeeds. The symptom is baffling: 6 of 7 pods healthy, and
+`argocd-applicationset-controller` crash-looping every ~2 minutes with
+
+```
+no matches for kind "ApplicationSet" in version "argoproj.io/v1alpha1"
+```
+
+Server-side apply tracks ownership in `managedFields` instead, so there's no oversized
+annotation. `--force-conflicts` is needed if anything was previously applied
+client-side. Verify all three CRDs landed:
+
+```bash
+kubectl get crd | grep argoproj    # applications, applicationsets, appprojects
+```
+
+> If you hit the crash loop after fixing the CRD, delete the pod rather than waiting —
+> `CrashLoopBackOff` has an exponential timer, so a fixed root cause still looks broken
+> for minutes.
+
+Then the app-of-apps root — **the last hand-applied manifest in this repo**:
+
+```bash
+kubectl apply -f root.yaml
+```
+
+It syncs `argocd/`, which creates the `infra`, `staging`, and `prod` Applications, which
+in turn adopt everything from step 6. Adoption causes no restarts: Argo diffs git against
+live, finds them equivalent, and just stamps its tracking annotation.
+
+Finally, get in and secure the admin account:
+
+```bash
+kubectl port-forward -n argocd svc/argocd-server 8443:443
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+argocd login localhost:8443 --insecure --username admin
+
+argocd account update-password
+kubectl -n argocd delete secret argocd-initial-admin-secret
+```
+
+Change the password **before** deleting the Secret — deleting it doesn't invalidate the
+old password, it only removes your ability to look it up. Don't pass `--password` on the
+command line; it lands in shell history.
+
+> **Why manual:** the bootstrap paradox. Something has to create the thing that creates
+> everything else. `root.yaml` reduces that to exactly one command, forever.
+
+---
+
+## 8. GHCR package visibility — nothing to do (if the repo is public)
 
 A package published from a **public** repo via the workflow's `GITHUB_TOKEN` inherits
 that visibility, so it's pullable anonymously and needs no `imagePullSecrets`. Verified:
@@ -137,7 +202,7 @@ admin PAT in CI. Worse trade than one click.
 
 ---
 
-## 8. Local DNS for browser testing
+## 9. Local DNS for browser testing
 
 The cluster isn't reachable from the public internet, so point the hostnames at the
 local ingress:
@@ -157,6 +222,10 @@ without touching `/etc/hosts`.
 
 ## Still to come
 
-- **Argo CD** (Phase 4) must be hand-installed — it can't deploy itself. The
-  **app-of-apps** pattern minimizes this to a single manual `Application` that points
-  at a directory of all the others; everything after that is git-driven.
+- **`argocd.rcamine.com` via Istio** — currently reachable only by port-forward with
+  `--insecure`. Needs a Gateway/VirtualService reusing the wildcard cert, plus
+  `argocd-server` running with `--insecure` so Istio terminates TLS instead of Argo
+  serving its own self-signed cert.
+- **prod on the apex `rcamine.com`** — prod has no external ingress at all today; it's
+  reachable only in-cluster at `http://web.prod`. The wildcard cert already covers the
+  apex, so it needs a Gateway/VirtualService mirroring staging's and a `/etc/hosts` entry.

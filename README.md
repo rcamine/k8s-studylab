@@ -20,7 +20,7 @@ namespaces in a single cluster, not separate clusters.
 | 1 | Namespaces, RBAC, **NetworkPolicy isolation** | ✅ done |
 | 2 | Istio ingress + real TLS on `*.rcamine.com` | ✅ done |
 | 3 | CI: build → GHCR → running in-cluster | ✅ done |
-| 4 | GitOps with Argo CD | ⬜ |
+| 4 | GitOps with Argo CD | ✅ done |
 | 5 | Canary 1→100%, Prometheus-gated (Argo Rollouts) | ⬜ |
 | 6 | Prometheus + Grafana + Loki, dashboards | ⬜ |
 | 7 | HPA → KEDA on Kafka consumer lag | ⬜ |
@@ -43,6 +43,10 @@ flowchart LR
     GHCR -.->|pull| WS
     GHCR -.->|pull| WP
 
+    GIT[(git: main)] -->|polls| ACD[Argo CD<br/>argocd]
+    ACD -->|auto-sync + selfHeal| WS
+    ACD -->|manual sync| WP
+
     WS <-.->|BLOCKED by NetworkPolicy| WP
 ```
 
@@ -58,21 +62,38 @@ traffic is dropped in both directions — verified, not assumed.
 ## Layout
 
 ```
-00-namespaces.yaml        namespaces + istio-injection labels
-10-test-apps.yaml         web Deployment+Service (staging & prod) + a client pod
-20-networkpolicy.yaml     default-deny ingress (prod)
-21-allow-ingress.yaml     additive allow-rules (prod)
-22-staging-policies.yaml  same pair for staging
-30-istio-ingress.yaml     Gateway + VirtualService for staging.rcamine.com
-40-clusterissuers.yaml    Let's Encrypt staging + prod ACME issuers
-41-certificate.yaml       wildcard *.rcamine.com + apex
+root.yaml                 app-of-apps — the ONE hand-applied manifest
+argocd/
+  infra.yaml              Application → infra/
+  staging.yaml            Application → staging/   (automated + selfHeal)
+  prod.yaml               Application → prod/      (manual)
+infra/
+  namespaces.yaml         namespaces + istio-injection labels
+  clusterissuers.yaml     Let's Encrypt staging + prod ACME issuers
+  certificate.yaml        wildcard *.rcamine.com + apex (in istio-system)
+staging/
+  web.yaml                Deployment + Service
+  client.yaml             netshoot pod to curl from
+  networkpolicy.yaml      default-deny ingress + additive allow-rules
+  istio-ingress.yaml      Gateway + VirtualService for staging.rcamine.com
+prod/
+  web.yaml                Deployment + Service
+  networkpolicy.yaml      default-deny ingress + additive allow-rules
 cert-manager-values.yaml  Helm values (DNS-01 recursive nameservers)
 app/                      the demo Go service
 .github/workflows/        CI: build + push to GHCR
 BOOTSTRAP.md              manual steps to recreate this from zero
 ```
 
-Manifests are numbered by apply order — lower numbers are prerequisites for higher ones.
+One directory per Argo Application. The split is what gives each environment its
+own sync, history, and rollback — a broken `prod/` manifest can't block a staging
+deploy, and `argocd app rollback staging` touches staging alone.
+
+> **No Kustomize, deliberately.** `staging/web.yaml` and `prod/web.yaml` are
+> near-identical copies. A Kustomize `base/` + overlays would remove that
+> duplication, at the cost of a rendering step between what's in git and what
+> lands in the cluster. For now the manifests are literal and greppable; revisit
+> when maintaining two copies actually hurts.
 
 ---
 
@@ -125,6 +146,64 @@ needs no `imagePullSecrets`.
 
 ---
 
+## GitOps
+
+Nothing here is deployed with `kubectl apply`. Argo CD polls this repo and reconciles
+the cluster to match it — a deploy is a commit.
+
+```
+git push  →  root (auto-sync)  →  argocd/*.yaml  →  infra / staging / prod
+```
+
+`root.yaml` is the **only** manifest applied by hand, and only once. It syncs `argocd/`,
+so the Applications themselves are git-managed; adding an environment is a new file plus
+a push. It lives at the repo root rather than inside `argocd/` on purpose — an
+Application that manages itself can be left unable to sync its own fix.
+
+| Application | Path | Sync |
+|---|---|---|
+| `root` | `argocd/` | automated, `selfHeal`, **no prune** |
+| `infra` | `infra/` | manual |
+| `staging` | `staging/` | automated, `selfHeal`, `prune` |
+| `prod` | `prod/` | manual |
+
+**Why staging and prod differ.** `selfHeal` reverts any live change contradicting git
+within seconds. In staging that's the point — drift becomes impossible and git is the
+only way in. In prod it's hostile: during an incident you scale something by hand to
+shed load, and an invisible controller silently undoes your intervention while you debug
+why it "didn't work." Promotion to prod should be a decision, not a consequence of
+pushing to `main`.
+
+**Two deliberate safety choices:**
+
+- **No prune on `root`.** Pruning there wouldn't delete a Deployment — it would delete an
+  entire *Application*, and with cascade semantics everything beneath it.
+- **Namespaces carry `argocd.argoproj.io/sync-options: Prune=false,Delete=false`.**
+  Namespace deletion is recursive and ignores Argo's ownership model, so removing one
+  takes every object inside — including things Argo never managed: the hand-created
+  `cloudflare-api-token` Secret, the Let's Encrypt account keys, and (for `argocd`) Argo
+  CD itself. Losing the ACME account key plus the cert can mean a **week locked out of
+  HTTPS** on Let's Encrypt's duplicate-certificate rate limit, which no command fixes.
+
+> `argocd app delete` **cascades by default** and deletes every managed resource.
+> `kubectl delete app` does not, unless the `resources-finalizer.argocd.argoproj.io`
+> finalizer is set. When restructuring — deleting an Application while keeping the
+> workloads running — use `kubectl`, whose failure mode is harmless.
+
+Useful commands:
+
+```bash
+argocd app diff staging       # what would change, against the normalized live object
+argocd app history staging    # deploy log, each entry keyed to a git SHA
+argocd app rollback staging 1 # revert to a previous synced revision
+```
+
+> Argo compares **content, not revision strings**. A manually-synced app can sit at an
+> older `.status.sync.revision` and still be `Synced` — it just means nothing in its
+> directory changed.
+
+---
+
 ## Stack
 
 | Component | Version | Install |
@@ -132,6 +211,7 @@ needs no `imagePullSecrets`.
 | k3s (Rancher Desktop) | `v1.36.2+k3s1` | Rancher Desktop, Traefik disabled |
 | Istio | `1.30.2` | sidecar mode, PERMISSIVE mTLS |
 | cert-manager | `v1.21.0` | Helm |
+| Argo CD | `v3.4.5` | `kubectl apply --server-side` (see BOOTSTRAP) |
 | Go | `1.26` | — |
 
 External dependencies are only **GitHub** (repo + Actions + GHCR) and **rcamine.com**
@@ -156,6 +236,13 @@ curl -so /dev/null -w '%{http_code}\n' -H 'Host: staging.rcamine.com' http://loc
 
 # isolation holds: staging cannot reach prod
 kubectl exec -n staging deploy/client -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://web.prod
+
+# GitOps: everything reconciled, nothing drifted
+kubectl get app -n argocd     # root/infra/staging/prod all Synced + Healthy
+
+# selfHeal works: this change is reverted within seconds
+kubectl scale deploy/web -n staging --replicas=5
+kubectl get deploy web -n staging -o jsonpath='{.spec.replicas}{"\n"}'   # back to 2
 ```
 
 > That last one returns **503**, not 200 — the client's Envoy sidecar reporting
