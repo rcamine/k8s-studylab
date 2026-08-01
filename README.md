@@ -71,11 +71,13 @@ infra/
   namespaces.yaml         namespaces + istio-injection labels
   clusterissuers.yaml     Let's Encrypt staging + prod ACME issuers
   certificate.yaml        wildcard *.rcamine.com + apex (in istio-system)
+  gateway.yaml            the ONE shared Gateway — every host on the cert
+  argocd-ingress.yaml     VirtualService for argocd.rcamine.com
 staging/
   web.yaml                Deployment + Service
   client.yaml             netshoot pod to curl from
   networkpolicy.yaml      default-deny ingress + additive allow-rules
-  istio-ingress.yaml      Gateway + VirtualService for staging.rcamine.com
+  istio-ingress.yaml      VirtualService for staging.rcamine.com
 prod/
   web.yaml                Deployment + Service
   networkpolicy.yaml      default-deny ingress + additive allow-rules
@@ -277,3 +279,31 @@ kubectl rollout restart deploy/istio-ingressgateway deploy/istio-egressgateway -
 This is an artifact of running on a laptop — a cluster that stays online rotates these
 silently. Unrelated to the public Let's Encrypt cert, which is valid for 90 days and
 auto-renews around day 60.
+
+> The rotation timer runs on a monotonic clock that doesn't advance while the Mac is
+> asleep, so a cert can sail past its halfway renewal point and never renew — even
+> though istiod was reachable the whole time it was awake. Total uptime isn't what
+> matters; being awake at the right moment is. Check before it bites:
+> `istioctl proxy-config secret deploy/web -n staging`.
+
+**Only ever run ONE Gateway per certificate.** Every host on the wildcard cert is served
+by the single `rcamine-gateway` in `istio-system` (`infra/gateway.yaml`), and
+VirtualServices bind to it cross-namespace as `istio-system/rcamine-gateway`. Splitting
+it back into a Gateway per host reintroduces a genuinely baffling bug:
+
+> Istio builds one Envoy filter chain **per SNI**, each with its own route config
+> containing only that Gateway's hosts. Browsers coalesce HTTP/2 connections when a new
+> hostname resolves to the same IP *and* the certificate already presented covers it
+> (RFC 7540 §9.1.1) — both true for every `*.rcamine.com` host here. So a request for
+> host B rides host A's connection, lands on A's route config, finds no route, and
+> **404s**. Whichever host you load first wins until you quit the browser.
+>
+> `curl` never reproduces it (it doesn't coalesce), so this looks like a browser or DNS
+> problem for a long time. Diagnose it with
+> `istioctl proxy-config listeners deploy/istio-ingressgateway -n istio-system` — one
+> SNI match per Gateway is the tell. Istio documents this under
+> [common problems / network issues](https://istio.io/latest/docs/ops/common-problems/network-issues/).
+
+The shared Gateway already declares the apex `rcamine.com` alongside `*.rcamine.com`
+(wildcards don't cover the apex), so exposing prod there later needs only a
+VirtualService.
