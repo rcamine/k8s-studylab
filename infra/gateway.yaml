@@ -1,0 +1,35 @@
+# ONE Gateway for every host on this certificate.
+#
+# Istio builds a filter chain per SNI, each with its own route config. Two
+# Gateways sharing a cert means two route configs that don't know about each
+# other's hosts — and browsers coalesce HTTP/2 connections when the IP and
+# cert match, so a request for host B arrives on host A's chain and 404s.
+# https://istio.io/latest/docs/ops/common-problems/network-issues/
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: rcamine-gateway
+  namespace: istio-system # shared: lives with the gateway pod and the cert
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: wildcard-rcamine-tls
+      hosts:
+        - "*.rcamine.com"
+        - "rcamine.com" # apex, for prod later — wildcards don't cover it
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*.rcamine.com"
+        - "rcamine.com"
+      tls:
+        httpsRedirect: true

@@ -1,42 +1,10 @@
-# External access to the Argo CD UI/API at argocd.rcamine.com.
+# Routing only: argocd.rcamine.com -> the Argo CD UI/API.
+# TLS terminates at the shared Gateway in infra/gateway.yaml.
 #
-# Replaces `kubectl port-forward` + `--insecure`: TLS is terminated once at
-# the Istio gateway using the same Let's Encrypt wildcard cert that serves
-# staging.rcamine.com.
-#
-# Requires argocd-server to run with --insecure (set via server.insecure in
-# the argocd-cmd-params-cm ConfigMap). Otherwise Argo terminates TLS itself
-# and the gateway would have to re-encrypt to a self-signed cert it has no
-# reason to trust. TLS at the edge, plaintext behind it.
-apiVersion: networking.istio.io/v1
-kind: Gateway
-metadata:
-  name: argocd-gateway
-  namespace: argocd
-spec:
-  selector:
-    istio: ingressgateway # the shared gateway pod in istio-system
-  servers:
-    - port:
-        number: 443
-        name: https
-        protocol: HTTPS
-      tls:
-        mode: SIMPLE
-        # Secret must live in istio-system — credentialName resolves
-        # relative to the GATEWAY's namespace, not this manifest's.
-        credentialName: wildcard-rcamine-tls
-      hosts:
-        - "argocd.rcamine.com"
-    - port:
-        number: 80
-        name: http
-        protocol: HTTP
-      hosts:
-        - "argocd.rcamine.com"
-      tls:
-        httpsRedirect: true
----
+# Depends on argocd-server running with --insecure (server.insecure in the
+# argocd-cmd-params-cm ConfigMap). Otherwise Argo serves its own self-signed
+# cert and the gateway would have to re-encrypt to something it can't trust.
+# That setting lives outside git — see BOOTSTRAP step 7.
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
@@ -46,7 +14,7 @@ spec:
   hosts:
     - "argocd.rcamine.com"
   gateways:
-    - argocd-gateway
+    - istio-system/rcamine-gateway
   http:
     - route:
         - destination:
