@@ -20,7 +20,7 @@ namespaces in a single cluster, not separate clusters.
 | 1 | Namespaces, RBAC, **NetworkPolicy isolation** | ✅ done |
 | 2 | Istio ingress + real TLS on `*.rcamine.com` | ✅ done |
 | 3 | CI: build → GHCR → running in-cluster | ✅ done |
-| 4 | GitOps with Argo CD | ✅ done |
+| 4 | GitOps with Argo CD, UI on `argocd.rcamine.com` | ✅ done |
 | 5 | Canary 1→100%, Prometheus-gated (Argo Rollouts) | ⬜ |
 | 6 | Prometheus + Grafana + Loki, dashboards | ⬜ |
 | 7 | HPA → KEDA on Kafka consumer lag | ⬜ |
@@ -240,6 +240,9 @@ curl -so /dev/null -w '%{http_code}\n' -H 'Host: staging.rcamine.com' http://loc
 # isolation holds: staging cannot reach prod
 kubectl exec -n staging deploy/client -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://web.prod
 
+# the Argo CD UI, same gateway and wildcard cert, no port-forward
+curl -s -o /dev/null -w '%{http_code}\n' --resolve argocd.rcamine.com:443:127.0.0.1 https://argocd.rcamine.com/
+
 # GitOps: everything reconciled, nothing drifted
 kubectl get app -n argocd     # root/infra/staging/prod all Synced + Healthy
 
@@ -248,7 +251,7 @@ kubectl scale deploy/web -n staging --replicas=5
 kubectl get deploy web -n staging -o jsonpath='{.spec.replicas}{"\n"}'   # back to 2
 ```
 
-> That last one returns **503**, not 200 — the client's Envoy sidecar reporting
+> The `web.prod` check returns **503**, not 200 — the client's Envoy sidecar reporting
 > `upstream connect error ... remote connection failure` because NetworkPolicy dropped
 > the packets. (Without a sidecar in the path it shows as `000`, a curl timeout.) Either
 > way it's blocked; a successful reply would have been 200.

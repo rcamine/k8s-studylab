@@ -278,7 +278,26 @@ real entries.
 - **prod on the apex `rcamine.com`** — prod has no external ingress at all today; it's
   reachable only in-cluster at `http://web.prod`. The wildcard cert already covers the
   apex, so it needs a Gateway/VirtualService mirroring staging's and a `/etc/hosts` entry.
-- **A NetworkPolicy for `argocd`** — `staging` and `prod` are default-deny, but `argocd`
-  has no policy at all, and it now hosts an admin console reachable through the gateway.
-  It isn't a copy of the existing pair: Argo needs egress to GitHub and the Kubernetes
-  API, and ingress from `istio-system`.
+- **Tighten `argocd-server`'s NetworkPolicy.** Argo's install manifest already ships
+  seven policies, one per component, and the internal ones are tight — only specific
+  peers reach Redis (6379) or the repo-server (8081). But `argocd-server`'s policy is
+  `ingress: [{}]`: **allow from any source on any port**, because Argo can't know where
+  your ingress traffic will originate. Verified: a pod in `staging` can reach
+  `argocd-server` and read `/api/version`.
+
+  Tightening it means **replacing** that policy, not adding to it — NetworkPolicies are
+  additive, so a second, stricter policy cannot override a permissive one. Since the
+  original comes from a vendored URL rather than this repo, owning it in git under the
+  same name is the pragmatic fix; the proper one is managing the Argo install itself
+  declaratively (Kustomize over the remote manifest).
+
+  Note the exposure is bounded: no `rcamine.com` A records exist publicly, so nothing is
+  reachable from the internet. This is defence in depth against lateral movement, not a
+  fix for an open door.
+
+- **Egress policy on `staging`.** All policies in this repo are ingress-only, so a
+  compromised pod has unrestricted outbound access to the internet. Note that reaching
+  the *Kubernetes API* is much less useful than it sounds: pods authenticate as
+  `system:serviceaccount:<ns>:default`, which has no RoleBindings and gets 403 on
+  everything but self-reviews and discovery. For pods that never call the API, the cheap
+  fix is `automountServiceAccountToken: false` rather than an egress rule.
