@@ -1,0 +1,36 @@
+# The Argo Rollouts controller — a third-party install, managed by Argo CD.
+#
+# Note the source: it's NOT our repo. An Application can point at anyone's
+# git, which is how you version third-party components. Upgrading is a
+# one-line change to targetRevision, reviewable and revertable like any
+# other commit — and `argocd app diff` shows you what the upgrade changes.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rollouts
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argo-rollouts
+    # Pinned to a tag, never a branch. Upstream's main WILL move under you.
+    targetRevision: v1.9.1
+    # A kustomization referencing ../base and ../crds. Argo renders it for
+    # us — we still write no Kustomize ourselves.
+    path: manifests/cluster-install
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo-rollouts
+  syncPolicy:
+    # Pinned tag = upstream can't drift, so automation is safe here.
+    # selfHeal keeps the controller intact if someone edits it live.
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      # The namespace isn't in infra/namespaces.yaml on purpose: it belongs
+      # to this Application, not to our environment layout.
+      - CreateNamespace=true
+      # kubectl's client-side apply stuffs the whole manifest into an
+      # annotation, capped at 262144 bytes. rollout-crd.yaml is 200918 —
+      # under, but not by much, and it grows each release. Server-side
+      # apply uses managedFields instead and has no such cap.
+      - ServerSideApply=true
