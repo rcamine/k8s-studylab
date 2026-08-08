@@ -1,0 +1,17 @@
+# Subsets are how Istio addresses two versions of one Service separately.
+# `labels` is a selector over the pods behind `host`.
+#
+# Both subsets look identical here on purpose. The Rollouts controller
+# injects `rollouts-pod-template-hash` into each one at runtime, pointing
+# stable at the old ReplicaSet and canary at the new. That injection is
+# what argocd/staging.yaml has to ignore.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata: { name: web, namespace: staging }
+spec:
+  host: web.staging.svc.cluster.local
+  subsets:
+    - name: stable
+      labels: { app: web }
+    - name: canary
+      labels: { app: web }

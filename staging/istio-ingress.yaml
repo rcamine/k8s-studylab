@@ -14,8 +14,16 @@ spec:
   gateways:
     - istio-system/rcamine-gateway
   http:
-    - route:
+    # Named so the Rollout can point at this specific route.
+    - name: primary
+      route:
         - destination:
             host: web.staging.svc.cluster.local
-            port:
-              number: 80
+            subset: stable
+            port: { number: 80 }
+          weight: 100
+        - destination:
+            host: web.staging.svc.cluster.local
+            subset: canary
+            port: { number: 80 }
+          weight: 0

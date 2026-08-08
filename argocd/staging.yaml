@@ -13,6 +13,19 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: staging
+  # The Rollouts controller owns these fields at runtime; git only holds
+  # their at-rest values. Without this, selfHeal reverts the canary weight
+  # to 0 seconds after the controller sets it, and the two controllers
+  # fight for the whole rollout.
+  ignoreDifferences:
+    - group: networking.istio.io
+      kind: VirtualService
+      jqPathExpressions:
+        - .spec.http[].route[].weight
+    - group: networking.istio.io
+      kind: DestinationRule
+      jqPathExpressions:
+        - .spec.subsets[].labels."rollouts-pod-template-hash"
   # Staging is fully automated: a push to main deploys, drift is reverted.
   syncPolicy:
     automated:
@@ -23,3 +36,10 @@ spec:
       # Right for staging (git is the only way in); deliberately NOT set
       # on prod, where it would fight an on-call doing emergency surgery.
       selfHeal: true
+    syncOptions:
+      # ignoreDifferences alone only affects the *diff*. This is what makes
+      # a sync actually leave those fields alone. Mandatory with selfHeal.
+      - RespectIgnoreDifferences=true
+      # Don't re-apply resources already Synced. Narrows the window where
+      # an unrelated sync could stomp an in-flight canary.
+      - ApplyOutOfSyncOnly=true

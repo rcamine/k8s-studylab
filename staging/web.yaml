@@ -1,8 +1,13 @@
-# "web" in staging — same image as prod (one artifact promoted through envs).
-# This file and prod/web.yaml are near-identical today; that duplication is
-# the thing a Kustomize base would remove if/when we add one.
-apiVersion: apps/v1
-kind: Deployment
+# "web" in staging — a Rollout, not a Deployment.
+#
+# A Rollout is a Deployment superset: replicas/selector/template mean
+# exactly the same things. Only `strategy` differs — canary steps instead
+# of RollingUpdate. It still manages ReplicaSets and Pods underneath.
+#
+# prod/web.yaml is still a plain Deployment, on purpose: canary belongs
+# where we can afford to break it first.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata: { name: web, namespace: staging }
 spec:
   replicas: 2
@@ -12,7 +17,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: ghcr.io/rcamine/studylab-web:6e6a4cc70a515a7793cfdb6d17c4254f5ee4c6c1
+          image: ghcr.io/rcamine/studylab-web:07a642e6f28964d1ec6ef42662e3a8de32e1d9bb
           ports: [{ containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
@@ -24,7 +29,33 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 64Mi }
+  strategy:
+    canary:
+      # Which Istio objects the controller is allowed to rewrite. Both
+      # already exist in this folder; the controller edits them live.
+      trafficRouting:
+        istio:
+          virtualService:
+            name: web
+            routes: [primary]
+          destinationRule:
+            name: web
+            canarySubsetName: canary
+            stableSubsetName: stable
+      # Short pauses so the lab is watchable. Real canaries pause for
+      # 10-30m per step, because you need enough traffic for the metrics
+      # to mean anything.
+      steps:
+        - setWeight: 5
+        - pause: { duration: 30s }
+        - setWeight: 25
+        - pause: { duration: 30s }
+        - setWeight: 50
+        - pause: { duration: 30s }
 ---
+# Unchanged, and NOT modified by the controller. Subset routing splits
+# traffic inside one Service; the two-Services approach is the other way
+# of doing this, and we're not using it.
 apiVersion: v1
 kind: Service
 metadata: { name: web, namespace: staging }
